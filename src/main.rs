@@ -2,6 +2,7 @@ use std::io::{IsTerminal, Read, Write};
 
 use anyhow::Result;
 use clap::Parser;
+use rustyline::{DefaultEditor, error::ReadlineError};
 use serde_json::{Value, json};
 
 /// Simple assistant program
@@ -64,12 +65,22 @@ async fn main() -> Result<()> {
             .subcommand(clap::Command::new("/quit").alias("/q").about("Exit"));
 
         let mut messages: Vec<Value> = vec![];
-        loop {
-            print!(">>> ");
-            std::io::stdout().flush()?;
 
-            let mut prompt = String::new();
-            std::io::stdin().read_line(&mut prompt)?;
+        let mut rl = DefaultEditor::new()?;
+        loop {
+            let readline = rl.readline(">> ");
+            let prompt = match readline {
+                Ok(line) => {
+                    rl.add_history_entry(line.as_str())?;
+                    line
+                }
+                Err(ReadlineError::Interrupted) => break,
+                Err(ReadlineError::Eof) => break,
+                Err(err) => {
+                    eprintln!("Error: {:?}", err);
+                    break;
+                }
+            };
 
             if prompt.starts_with("/") {
                 let matches = command.clone().try_get_matches_from(
