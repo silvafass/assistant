@@ -83,13 +83,38 @@ async fn main() -> Result<()> {
                     .await?;
 
                 if stream_mode {
+                    let mut is_reasoning = false;
                     while let Some(chunk) = response.chunk().await? {
                         let chunk: Value = serde_json::from_slice(&chunk)?;
-                        print!("{}", chunk["response"].as_str().unwrap());
+
+                        let chunk = if let Some(thinking) = chunk["thinking"].as_str()
+                            && !thinking.is_empty()
+                        {
+                            if !is_reasoning {
+                                is_reasoning = true;
+                                println!("<reasoning>");
+                            }
+                            thinking
+                        } else if let Some(response) = chunk["response"].as_str()
+                            && !response.is_empty()
+                        {
+                            if is_reasoning {
+                                is_reasoning = false;
+                                println!("\n</reasoning>")
+                            }
+                            response
+                        } else {
+                            continue;
+                        };
+                        print!("{}", chunk);
                         std::io::stdout().flush()?
                     }
                 } else {
                     let response = response.json::<Value>().await?;
+                    println!(
+                        "<reasoning>\n{}\n</reasoning>",
+                        response["thinking"].as_str().unwrap_or_default()
+                    );
                     println!("{}", response["response"].as_str().unwrap())
                 }
             }
@@ -141,6 +166,13 @@ async fn main() -> Result<()> {
                     }
                 } else {
                     let response = response.json::<Value>().await?;
+                    println!("<reasoning>");
+                    for output in response["output"].as_array().unwrap() {
+                        if output["type"] == "reasoning" {
+                            println!("{}", output["summary"][0]["text"].as_str().unwrap())
+                        }
+                    }
+                    println!("</reasoning>");
                     for output in response["output"].as_array().unwrap() {
                         if output["type"] == "message" {
                             println!("{}", output["content"][0]["text"].as_str().unwrap())
@@ -222,11 +254,34 @@ async fn main() -> Result<()> {
                     if stream_mode {
                         let mut role: Option<String> = None;
                         let mut content = String::new();
+                        let mut is_reasoning = false;
 
                         while let Some(chunk) = response.chunk().await? {
                             let chunk: Value = serde_json::from_slice(&chunk)?;
-                            content.push_str(chunk["message"]["content"].as_str().unwrap());
-                            print!("{}", chunk["message"]["content"].as_str().unwrap());
+
+                            let chunk_text = if let Some(thinking) =
+                                chunk["message"]["thinking"].as_str()
+                                && !thinking.is_empty()
+                            {
+                                if !is_reasoning {
+                                    is_reasoning = true;
+                                    println!("<reasoning>");
+                                }
+                                thinking
+                            } else if let Some(content) = chunk["message"]["content"].as_str()
+                                && !content.is_empty()
+                            {
+                                if is_reasoning {
+                                    is_reasoning = false;
+                                    println!("\n</reasoning>")
+                                }
+                                content
+                            } else {
+                                continue;
+                            };
+
+                            content.push_str(chunk_text);
+                            print!("{}", chunk_text);
                             std::io::stdout().flush()?;
 
                             if role.is_none() {
@@ -240,6 +295,11 @@ async fn main() -> Result<()> {
                         }));
                     } else {
                         let response = response.json::<Value>().await?;
+
+                        println!(
+                            "<reasoning>\n{}\n</reasoning>",
+                            response["message"]["thinking"].as_str().unwrap()
+                        );
                         println!("{}", response["message"]["content"].as_str().unwrap());
 
                         messages.push(json!({
@@ -253,8 +313,6 @@ async fn main() -> Result<()> {
                         "role": "user",
                         "content": prompt
                     }));
-
-                    dbg!(&messages);
 
                     let payload = json!({
                         "model": model,
@@ -272,6 +330,8 @@ async fn main() -> Result<()> {
                         let mut role: Option<String> = None;
                         let mut content = String::new();
 
+                        let mut is_reasoning = false;
+
                         while let Some(chunk) = response.chunk().await? {
                             let chunk = if &chunk[..] == b"data: [DONE]\n\n" {
                                 continue;
@@ -287,21 +347,31 @@ async fn main() -> Result<()> {
 
                             let chunk: Value = serde_json::from_slice(chunk)?;
 
-                            if let Value::Null = chunk["choices"][0]["delta"]["content"] {
+                            let chunk_text = if let Value::String(text) =
+                                &chunk["choices"][0]["delta"]["reasoning"]
+                            {
+                                if !is_reasoning {
+                                    is_reasoning = true;
+                                    println!("<reasoning>");
+                                }
+                                text
+                            } else if let Value::String(text) =
+                                &chunk["choices"][0]["delta"]["content"]
+                            {
+                                if is_reasoning {
+                                    is_reasoning = false;
+                                    println!("\n</reasoning>")
+                                }
+                                text
+                            } else {
+                                if let Value::Object(chunk) = &chunk {
+                                    eprintln!("{chunk:?}");
+                                }
                                 continue;
-                            }
+                            };
 
-                            content.push_str(
-                                chunk["choices"][0]["delta"]["content"]
-                                    .as_str()
-                                    .unwrap_or_default(),
-                            );
-                            print!(
-                                "{}",
-                                chunk["choices"][0]["delta"]["content"]
-                                    .as_str()
-                                    .unwrap_or_default()
-                            );
+                            content.push_str(chunk_text);
+                            print!("{}", chunk_text);
                             std::io::stdout().flush()?;
 
                             if role.is_none() {
