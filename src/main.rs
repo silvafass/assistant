@@ -1,14 +1,21 @@
-use std::io::{IsTerminal, Read, Write};
+use std::{
+    io::{IsTerminal, Read, Write},
+    str::FromStr,
+};
 
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use rustyline::{DefaultEditor, error::ReadlineError};
 use serde_json::{Value, json};
 
+const OLLAMA_API_BASE_URL: &str = "http://localhost:11434";
+const MISTRALRS_API_BASE_URL: &str = "http://0.0.0.0:1234";
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum Compatibility {
     Ollama,
     OpenAI,
+    MistralRS,
 }
 
 /// Simple assistant program
@@ -30,6 +37,10 @@ struct Args {
     /// Disable stream response
     #[arg(long, default_value_t = false)]
     no_stream: bool,
+
+    /// API base URL
+    #[arg(short, long, default_value_t = String::from(OLLAMA_API_BASE_URL))]
+    api_base_url: String,
 }
 
 #[tokio::main]
@@ -48,19 +59,25 @@ async fn main() -> Result<()> {
         None
     };
 
+    let (base_url, model) = if args.compatibility == Compatibility::MistralRS {
+        (reqwest::Url::from_str(MISTRALRS_API_BASE_URL)?, "default")
+    } else {
+        (reqwest::Url::from_str(&args.api_base_url)?, &args.model[..])
+    };
+
     let client = reqwest::Client::new();
 
     if let Some(prompt) = prompt {
         match args.compatibility {
             Compatibility::Ollama => {
                 let payload = json!({
-                    "model": &args.model,
+                    "model": model,
                     "stream": stream_mode,
                     "prompt": prompt,
                 });
 
                 let mut response = client
-                    .post("http://localhost:11434/api/generate")
+                    .post(base_url.join("/api/generate")?)
                     .json(&payload)
                     .send()
                     .await?;
@@ -76,15 +93,15 @@ async fn main() -> Result<()> {
                     println!("{}", response["response"].as_str().unwrap())
                 }
             }
-            Compatibility::OpenAI => {
+            Compatibility::OpenAI | Compatibility::MistralRS => {
                 let payload = json!({
-                    "model": &args.model,
+                    "model": model,
                     "stream": stream_mode,
                     "input": prompt,
                 });
 
                 let mut response = client
-                    .post("http://localhost:11434/v1/responses")
+                    .post(base_url.join("/v1/responses")?)
                     .json(&payload)
                     .send()
                     .await?;
@@ -110,6 +127,9 @@ async fn main() -> Result<()> {
                             }
                             &chunk[OUTPUT_TEXT_EVENT.len()..]
                         } else {
+                            if let Ok(chunk) = serde_json::from_slice::<Value>(&chunk) {
+                                eprintln!("{chunk}");
+                            }
                             continue;
                         };
 
@@ -188,13 +208,13 @@ async fn main() -> Result<()> {
                     }));
 
                     let payload = json!({
-                        "model": &args.model,
+                        "model": model,
                         "stream": stream_mode,
                         "messages": messages,
                     });
 
                     let mut response = client
-                        .post("http://localhost:11434/api/chat")
+                        .post(base_url.join("/api/chat")?)
                         .json(&payload)
                         .send()
                         .await?;
@@ -228,20 +248,22 @@ async fn main() -> Result<()> {
                         }));
                     }
                 }
-                Compatibility::OpenAI => {
+                Compatibility::OpenAI | Compatibility::MistralRS => {
                     messages.push(json!({
                         "role": "user",
                         "content": prompt
                     }));
 
+                    dbg!(&messages);
+
                     let payload = json!({
-                        "model": &args.model,
+                        "model": model,
                         "stream": stream_mode,
                         "messages": messages,
                     });
 
                     let mut response = client
-                        .post("http://localhost:11434/v1/chat/completions")
+                        .post(base_url.join("/v1/chat/completions")?)
                         .json(&payload)
                         .send()
                         .await?;
@@ -251,7 +273,9 @@ async fn main() -> Result<()> {
                         let mut content = String::new();
 
                         while let Some(chunk) = response.chunk().await? {
-                            let chunk = if chunk.starts_with(b"data: ")
+                            let chunk = if &chunk[..] == b"data: [DONE]\n\n" {
+                                continue;
+                            } else if chunk.starts_with(b"data: ")
                                 && chunk.ends_with(b"data: [DONE]\n\n")
                             {
                                 &chunk[..chunk.len() - b"data: [DONE]\n\n".len()][b"data: ".len()..]
@@ -262,17 +286,31 @@ async fn main() -> Result<()> {
                             };
 
                             let chunk: Value = serde_json::from_slice(chunk)?;
+
+                            if let Value::Null = chunk["choices"][0]["delta"]["content"] {
+                                continue;
+                            }
+
                             content.push_str(
-                                chunk["choices"][0]["delta"]["content"].as_str().unwrap(),
+                                chunk["choices"][0]["delta"]["content"]
+                                    .as_str()
+                                    .unwrap_or_default(),
                             );
                             print!(
                                 "{}",
-                                chunk["choices"][0]["delta"]["content"].as_str().unwrap()
+                                chunk["choices"][0]["delta"]["content"]
+                                    .as_str()
+                                    .unwrap_or_default()
                             );
                             std::io::stdout().flush()?;
 
                             if role.is_none() {
-                                role = Some(chunk["choices"][0]["delta"]["role"].to_string());
+                                role = Some(
+                                    chunk["choices"][0]["delta"]["role"]
+                                        .as_str()
+                                        .unwrap()
+                                        .to_string(),
+                                );
                             }
                         }
 
