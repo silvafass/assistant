@@ -19,7 +19,6 @@ hooks = [
         entry = "cargo clippy -- --deny warnings",
         language = "system",
         pass_filenames = false,
-        verbose = true,
     },
     {
         id = "cargo-fmt",

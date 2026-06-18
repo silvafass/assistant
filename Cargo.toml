@@ -2,6 +2,15 @@
 name = "assistant"
 version = "0.1.0"
 edition = "2024"
+default-run = "assist"
+
+[[bin]]
+name = "assist"
+path = "src/bin/main.rs"
+
+[[bin]]
+name = "assist-draft"
+path = "src/bin/draft.rs"
 
 [dependencies]
 anyhow = "1.0.102"
