@@ -1,15 +1,14 @@
-use std::{
-    io::{IsTerminal, Read, Write},
-    str::FromStr,
-};
+use std::io::Write;
+use std::io::{IsTerminal, Read};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
+use assistant::agent::Agent;
+use assistant::client;
+use assistant::client::ContentEvent::{StartReasoning, StopReasoning};
+use assistant::providers::{ollama, openai};
 use clap::{Parser, ValueEnum};
 use rustyline::{DefaultEditor, error::ReadlineError};
-use serde_json::{Value, json};
-
-const OLLAMA_API_BASE_URL: &str = "http://localhost:11434";
-const MISTRALRS_API_BASE_URL: &str = "http://0.0.0.0:1234";
+use tokio_stream::StreamExt;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum Compatibility {
@@ -39,16 +38,57 @@ struct Args {
     no_stream: bool,
 
     /// API base URL
-    #[arg(short, long, default_value_t = String::from(OLLAMA_API_BASE_URL))]
-    api_base_url: String,
+    #[arg(short, long)]
+    api_base_url: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    let stream_mode = !&args.no_stream;
+    match (&args.compatibility, &args.api_base_url) {
+        (Compatibility::Ollama, Some(api_base_url)) => {
+            ollama::Client::from(api_base_url.as_str())
+                .agent_builder(&args.model)
+                .build_and_run(|agent| start_agent(agent, args))
+                .await?;
+        }
+        (Compatibility::Ollama, None) => {
+            ollama::Client::default()
+                .agent_builder(&args.model)
+                .build_and_run(|agent| start_agent(agent, args))
+                .await?;
+        }
+        (Compatibility::OpenAI, Some(api_base_url)) => {
+            openai::Client::from(api_base_url.as_str())
+                .agent_builder(&args.model)
+                .build_and_run(|agent| start_agent(agent, args))
+                .await?;
+        }
+        (Compatibility::OpenAI, None) => {
+            openai::Client::from(ollama::DEFAULT_API_BASE_URL)
+                .agent_builder(&args.model)
+                .build_and_run(|agent| start_agent(agent, args))
+                .await?;
+        }
+        (Compatibility::MistralRS, None) => {
+            const MISTRALRS_API_BASE_URL: &str = "http://0.0.0.0:1234";
+            openai::Client::from(MISTRALRS_API_BASE_URL)
+                .agent_builder("default")
+                .build_and_run(|agent| start_agent(agent, args))
+                .await?;
+        }
+        (compatibility, api_base_url) => bail!(
+            "Unsupported args values: compatibility: {:?}, api_base_url: {:?} ",
+            compatibility,
+            api_base_url
+        ),
+    };
 
+    Ok(())
+}
+
+async fn start_agent<C: client::Client>(agent: Agent<C>, args: Args) -> anyhow::Result<()> {
     let prompt = if let Some(input) = args.input {
         Some(input)
     } else if !std::io::stdin().is_terminal() {
@@ -59,127 +99,34 @@ async fn main() -> Result<()> {
         None
     };
 
-    let (base_url, model) = if args.compatibility == Compatibility::MistralRS {
-        (reqwest::Url::from_str(MISTRALRS_API_BASE_URL)?, "default")
-    } else {
-        (reqwest::Url::from_str(&args.api_base_url)?, &args.model[..])
-    };
+    let stream_mode = !&args.no_stream;
 
-    let client = reqwest::Client::new();
-
-    if let Some(prompt) = prompt {
-        match args.compatibility {
-            Compatibility::Ollama => {
-                let payload = json!({
-                    "model": model,
-                    "stream": stream_mode,
-                    "prompt": prompt,
-                });
-
-                let mut response = client
-                    .post(base_url.join("/api/generate")?)
-                    .json(&payload)
-                    .send()
-                    .await?;
-
-                if stream_mode {
-                    let mut is_reasoning = false;
-                    while let Some(chunk) = response.chunk().await? {
-                        let chunk: Value = serde_json::from_slice(&chunk)?;
-
-                        let chunk = if let Some(thinking) = chunk["thinking"].as_str()
-                            && !thinking.is_empty()
-                        {
-                            if !is_reasoning {
-                                is_reasoning = true;
-                                println!("<reasoning>");
-                            }
-                            thinking
-                        } else if let Some(response) = chunk["response"].as_str()
-                            && !response.is_empty()
-                        {
-                            if is_reasoning {
-                                is_reasoning = false;
-                                println!("\n</reasoning>")
-                            }
-                            response
-                        } else {
-                            continue;
-                        };
-                        print!("{}", chunk);
+    if let Some(prompt) = &prompt {
+        if stream_mode {
+            let mut stream = agent.prompt_stream(prompt).await?;
+            while let Some(chunk) = stream.next().await {
+                match &chunk {
+                    client::StreamedReponseContent::ContentEvent(StartReasoning) => {
+                        println!("<reasoning>")
+                    }
+                    client::StreamedReponseContent::ChunkReasoning { content } => {
+                        print!("{}", content);
                         std::io::stdout().flush()?
                     }
-                } else {
-                    let response = response.json::<Value>().await?;
-                    println!(
-                        "<reasoning>\n{}\n</reasoning>",
-                        response["thinking"].as_str().unwrap_or_default()
-                    );
-                    println!("{}", response["response"].as_str().unwrap())
-                }
-            }
-            Compatibility::OpenAI | Compatibility::MistralRS => {
-                let payload = json!({
-                    "model": model,
-                    "stream": stream_mode,
-                    "input": prompt,
-                });
-
-                let mut response = client
-                    .post(base_url.join("/v1/responses")?)
-                    .json(&payload)
-                    .send()
-                    .await?;
-
-                if stream_mode {
-                    let mut is_reasoning = false;
-                    while let Some(chunk) = response.chunk().await? {
-                        const REASONING_SUMMARY_TEXT_EVENT: &[u8; 51] =
-                            b"event: response.reasoning_summary_text.delta\ndata: ";
-                        const OUTPUT_TEXT_EVENT: &[u8; 40] =
-                            b"event: response.output_text.delta\ndata: ";
-
-                        let chunk = if chunk.starts_with(REASONING_SUMMARY_TEXT_EVENT) {
-                            if !is_reasoning {
-                                is_reasoning = true;
-                                println!("<reasoning>");
-                            }
-                            &chunk[REASONING_SUMMARY_TEXT_EVENT.len()..]
-                        } else if chunk.starts_with(OUTPUT_TEXT_EVENT) {
-                            if is_reasoning {
-                                is_reasoning = false;
-                                println!("\n</reasoning>")
-                            }
-                            &chunk[OUTPUT_TEXT_EVENT.len()..]
-                        } else {
-                            if let Ok(chunk) = serde_json::from_slice::<Value>(&chunk) {
-                                eprintln!("{chunk}");
-                            }
-                            continue;
-                        };
-
-                        let chunk: Value = serde_json::from_slice(chunk)?;
-
-                        print!("{}", chunk["delta"].as_str().unwrap());
-
+                    client::StreamedReponseContent::ContentEvent(StopReasoning) => {
+                        println!("\n</reasoning>")
+                    }
+                    client::StreamedReponseContent::ChunkText { content } => {
+                        print!("{}", content);
                         std::io::stdout().flush()?
                     }
-                } else {
-                    let response = response.json::<Value>().await?;
-                    println!("<reasoning>");
-                    for output in response["output"].as_array().unwrap() {
-                        if output["type"] == "reasoning" {
-                            println!("{}", output["summary"][0]["text"].as_str().unwrap())
-                        }
-                    }
-                    println!("</reasoning>");
-                    for output in response["output"].as_array().unwrap() {
-                        if output["type"] == "message" {
-                            println!("{}", output["content"][0]["text"].as_str().unwrap())
-                        }
-                    }
+                    _ => continue,
                 }
             }
+        } else {
+            let content = agent.prompt(prompt).await?;
+            println!("<reasoning>\n{}\n</reasoning>", content.reasoning,);
+            println!("{}", content.text)
         }
     } else {
         let mut command = clap::Command::default()
@@ -188,7 +135,7 @@ async fn main() -> Result<()> {
             .subcommand(clap::Command::new("/help").alias("/?").about("Print help"))
             .subcommand(clap::Command::new("/quit").alias("/q").about("Exit"));
 
-        let mut messages: Vec<Value> = vec![];
+        let mut messages: Vec<client::ChatMessage> = vec![];
 
         let mut rl = DefaultEditor::new()?;
         loop {
@@ -232,177 +179,32 @@ async fn main() -> Result<()> {
                 continue;
             }
 
-            match args.compatibility {
-                Compatibility::Ollama => {
-                    messages.push(json!({
-                        "role": "user",
-                        "content": prompt
-                    }));
-
-                    let payload = json!({
-                        "model": model,
-                        "stream": stream_mode,
-                        "messages": messages,
-                    });
-
-                    let mut response = client
-                        .post(base_url.join("/api/chat")?)
-                        .json(&payload)
-                        .send()
-                        .await?;
-
-                    if stream_mode {
-                        let mut role: Option<String> = None;
-                        let mut content = String::new();
-                        let mut is_reasoning = false;
-
-                        while let Some(chunk) = response.chunk().await? {
-                            let chunk: Value = serde_json::from_slice(&chunk)?;
-
-                            let chunk_text = if let Some(thinking) =
-                                chunk["message"]["thinking"].as_str()
-                                && !thinking.is_empty()
-                            {
-                                if !is_reasoning {
-                                    is_reasoning = true;
-                                    println!("<reasoning>");
-                                }
-                                thinking
-                            } else if let Some(content) = chunk["message"]["content"].as_str()
-                                && !content.is_empty()
-                            {
-                                if is_reasoning {
-                                    is_reasoning = false;
-                                    println!("\n</reasoning>")
-                                }
-                                content
-                            } else {
-                                continue;
-                            };
-
-                            content.push_str(chunk_text);
-                            print!("{}", chunk_text);
-                            std::io::stdout().flush()?;
-
-                            if role.is_none() {
-                                role = Some(chunk["message"]["role"].to_string());
-                            }
+            if stream_mode {
+                let mut stream = agent.chat_stream(&prompt, &mut messages).await?;
+                while let Some(chunk) = stream.next().await {
+                    match &chunk {
+                        client::StreamedReponseContent::ContentEvent(StartReasoning) => {
+                            println!("<reasoning>");
                         }
-
-                        messages.push(json!({
-                            "role": role,
-                            "content": content
-                        }));
-                    } else {
-                        let response = response.json::<Value>().await?;
-
-                        println!(
-                            "<reasoning>\n{}\n</reasoning>",
-                            response["message"]["thinking"].as_str().unwrap()
-                        );
-                        println!("{}", response["message"]["content"].as_str().unwrap());
-
-                        messages.push(json!({
-                            "role": response["message"]["role"],
-                            "content": response["message"]["content"]
-                        }));
-                    }
-                }
-                Compatibility::OpenAI | Compatibility::MistralRS => {
-                    messages.push(json!({
-                        "role": "user",
-                        "content": prompt
-                    }));
-
-                    let payload = json!({
-                        "model": model,
-                        "stream": stream_mode,
-                        "messages": messages,
-                    });
-
-                    let mut response = client
-                        .post(base_url.join("/v1/chat/completions")?)
-                        .json(&payload)
-                        .send()
-                        .await?;
-
-                    if stream_mode {
-                        let mut role: Option<String> = None;
-                        let mut content = String::new();
-
-                        let mut is_reasoning = false;
-
-                        while let Some(chunk) = response.chunk().await? {
-                            let chunk = if &chunk[..] == b"data: [DONE]\n\n" {
-                                continue;
-                            } else if chunk.starts_with(b"data: ")
-                                && chunk.ends_with(b"data: [DONE]\n\n")
-                            {
-                                &chunk[..chunk.len() - b"data: [DONE]\n\n".len()][b"data: ".len()..]
-                            } else if chunk.starts_with(b"data: ") {
-                                &chunk[b"data: ".len()..]
-                            } else {
-                                continue;
-                            };
-
-                            let chunk: Value = serde_json::from_slice(chunk)?;
-
-                            let chunk_text = if let Value::String(text) =
-                                &chunk["choices"][0]["delta"]["reasoning"]
-                            {
-                                if !is_reasoning {
-                                    is_reasoning = true;
-                                    println!("<reasoning>");
-                                }
-                                text
-                            } else if let Value::String(text) =
-                                &chunk["choices"][0]["delta"]["content"]
-                            {
-                                if is_reasoning {
-                                    is_reasoning = false;
-                                    println!("\n</reasoning>")
-                                }
-                                text
-                            } else {
-                                if let Value::Object(chunk) = &chunk {
-                                    eprintln!("{chunk:?}");
-                                }
-                                continue;
-                            };
-
-                            content.push_str(chunk_text);
-                            print!("{}", chunk_text);
-                            std::io::stdout().flush()?;
-
-                            if role.is_none() {
-                                role = Some(
-                                    chunk["choices"][0]["delta"]["role"]
-                                        .as_str()
-                                        .unwrap()
-                                        .to_string(),
-                                );
-                            }
+                        client::StreamedReponseContent::ChunkMessageReasoning {
+                            content, ..
+                        } => {
+                            print!("{}", &content);
                         }
-
-                        messages.push(json!({
-                            "role": role,
-                            "content": content
-                        }));
-                    } else {
-                        let response = response.json::<Value>().await?;
-                        println!(
-                            "{}",
-                            response["choices"][0]["message"]["content"]
-                                .as_str()
-                                .unwrap()
-                        );
-
-                        messages.push(json!({
-                            "role": response["choices"][0]["message"]["role"],
-                            "content": response["choices"][0]["message"]["content"]
-                        }));
-                    }
+                        client::StreamedReponseContent::ContentEvent(StopReasoning) => {
+                            println!("\n</reasoning>");
+                        }
+                        client::StreamedReponseContent::ChunkMessageText { content, .. } => {
+                            print!("{}", &content);
+                        }
+                        _ => continue,
+                    };
+                    std::io::stdout().flush()?;
                 }
+            } else {
+                let content = agent.chat(&prompt, &mut messages).await?;
+                println!("<reasoning>\n{}\n</reasoning>", content.reasoning,);
+                println!("{}", content.text)
             }
 
             println!();
