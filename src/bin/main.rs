@@ -33,10 +33,6 @@ struct Args {
     #[arg(short, long, value_enum, default_value_t = Compatibility::Ollama)]
     compatibility: Compatibility,
 
-    /// Disable stream response
-    #[arg(long, default_value_t = false)]
-    no_stream: bool,
-
     /// API base URL
     #[arg(short, long)]
     api_base_url: Option<String>,
@@ -99,34 +95,26 @@ async fn start_agent<C: client::Client>(agent: Agent<C>, args: Args) -> anyhow::
         None
     };
 
-    let stream_mode = !&args.no_stream;
-
     if let Some(prompt) = &prompt {
-        if stream_mode {
-            let mut stream = agent.prompt_stream(prompt).await?;
-            while let Some(chunk) = stream.next().await {
-                match &chunk {
-                    client::StreamedReponseContent::ContentEvent(StartReasoning) => {
-                        println!("<reasoning>")
-                    }
-                    client::StreamedReponseContent::ChunkReasoning { content } => {
-                        print!("{}", content);
-                        std::io::stdout().flush()?
-                    }
-                    client::StreamedReponseContent::ContentEvent(StopReasoning) => {
-                        println!("\n</reasoning>")
-                    }
-                    client::StreamedReponseContent::ChunkText { content } => {
-                        print!("{}", content);
-                        std::io::stdout().flush()?
-                    }
-                    _ => continue,
+        let mut stream = agent.prompt_stream(prompt).await?;
+        while let Some(chunk) = stream.next().await {
+            match &chunk {
+                client::StreamedReponseContent::ContentEvent(StartReasoning) => {
+                    println!("<reasoning>")
                 }
+                client::StreamedReponseContent::ChunkReasoning { content } => {
+                    print!("{}", content);
+                    std::io::stdout().flush()?
+                }
+                client::StreamedReponseContent::ContentEvent(StopReasoning) => {
+                    println!("\n</reasoning>")
+                }
+                client::StreamedReponseContent::ChunkText { content } => {
+                    print!("{}", content);
+                    std::io::stdout().flush()?
+                }
+                _ => continue,
             }
-        } else {
-            let content = agent.prompt(prompt).await?;
-            println!("<reasoning>\n{}\n</reasoning>", content.reasoning,);
-            println!("{}", content.text)
         }
     } else {
         let mut command = clap::Command::default()
@@ -179,32 +167,24 @@ async fn start_agent<C: client::Client>(agent: Agent<C>, args: Args) -> anyhow::
                 continue;
             }
 
-            if stream_mode {
-                let mut stream = agent.chat_stream(&prompt, &mut messages).await?;
-                while let Some(chunk) = stream.next().await {
-                    match &chunk {
-                        client::StreamedReponseContent::ContentEvent(StartReasoning) => {
-                            println!("<reasoning>");
-                        }
-                        client::StreamedReponseContent::ChunkMessageReasoning {
-                            content, ..
-                        } => {
-                            print!("{}", &content);
-                        }
-                        client::StreamedReponseContent::ContentEvent(StopReasoning) => {
-                            println!("\n</reasoning>");
-                        }
-                        client::StreamedReponseContent::ChunkMessageText { content, .. } => {
-                            print!("{}", &content);
-                        }
-                        _ => continue,
-                    };
-                    std::io::stdout().flush()?;
-                }
-            } else {
-                let content = agent.chat(&prompt, &mut messages).await?;
-                println!("<reasoning>\n{}\n</reasoning>", content.reasoning,);
-                println!("{}", content.text)
+            let mut stream = agent.chat_stream(&prompt, &mut messages).await?;
+            while let Some(chunk) = stream.next().await {
+                match &chunk {
+                    client::StreamedReponseContent::ContentEvent(StartReasoning) => {
+                        println!("<reasoning>");
+                    }
+                    client::StreamedReponseContent::ChunkMessageReasoning { content, .. } => {
+                        print!("{}", &content);
+                    }
+                    client::StreamedReponseContent::ContentEvent(StopReasoning) => {
+                        println!("\n</reasoning>");
+                    }
+                    client::StreamedReponseContent::ChunkMessageText { content, .. } => {
+                        print!("{}", &content);
+                    }
+                    _ => continue,
+                };
+                std::io::stdout().flush()?;
             }
 
             println!();
