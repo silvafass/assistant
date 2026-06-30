@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use crate::{
     agent::AgentBuilder,
     client::{
-        self, ChatMessage,
+        self, ChatMessage, Client,
         ContentEvent::{StartReasoning, StopReasoning},
     },
     providers::ollama,
@@ -17,12 +17,12 @@ use crate::{
 pub const DEFAULT_API_BASE_URL: &str = "http://localhost:11434";
 
 #[derive(Debug)]
-pub struct Client {
+pub struct OllamaClient {
     api_base_url: Url,
     inner: reqwest::Client,
 }
 
-impl client::Client for Client {
+impl Client for OllamaClient {
     async fn prompt_stream(
         &self,
         payload: client::PromptPayload,
@@ -268,32 +268,32 @@ impl client::Client for Client {
     }
 }
 
-impl From<&str> for Client {
+impl From<&str> for OllamaClient {
     fn from(api_base_url: &str) -> Self {
-        Client {
+        OllamaClient {
             api_base_url: Url::from_str(api_base_url).unwrap(),
             inner: reqwest::Client::new(),
         }
     }
 }
 
-impl From<String> for Client {
+impl From<String> for OllamaClient {
     fn from(api_base_url: String) -> Self {
         Self::from(api_base_url.as_str())
     }
 }
 
-impl Default for Client {
+impl Default for OllamaClient {
     fn default() -> Self {
-        Client {
+        OllamaClient {
             api_base_url: Url::from_str(ollama::DEFAULT_API_BASE_URL).unwrap(),
             inner: reqwest::Client::new(),
         }
     }
 }
 
-impl Client {
-    pub fn agent_builder(self, model: &str) -> AgentBuilder<ollama::Client> {
-        AgentBuilder::from_client(self).model(model)
+impl OllamaClient {
+    pub fn agent_builder(self) -> AgentBuilder<OllamaClient> {
+        AgentBuilder::from_client(self)
     }
 }

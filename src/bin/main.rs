@@ -5,7 +5,9 @@ use anyhow::{Result, bail};
 use assistant::agent::Agent;
 use assistant::client;
 use assistant::client::ContentEvent::{StartReasoning, StopReasoning};
-use assistant::providers::{ollama, openai};
+use assistant::providers::ollama;
+use assistant::providers::ollama::OllamaClient;
+use assistant::providers::openai::OpenAiClient;
 use clap::{Parser, ValueEnum};
 use rustyline::{DefaultEditor, error::ReadlineError};
 use tokio_stream::StreamExt;
@@ -44,33 +46,38 @@ async fn main() -> Result<()> {
 
     match (&args.compatibility, &args.api_base_url) {
         (Compatibility::Ollama, Some(api_base_url)) => {
-            ollama::Client::from(api_base_url.as_str())
-                .agent_builder(&args.model)
+            OllamaClient::from(api_base_url.as_str())
+                .agent_builder()
+                .model(&args.model)
                 .build_and_run(|agent| start_agent(agent, args))
                 .await?;
         }
         (Compatibility::Ollama, None) => {
-            ollama::Client::default()
-                .agent_builder(&args.model)
+            OllamaClient::default()
+                .agent_builder()
+                .model(&args.model)
                 .build_and_run(|agent| start_agent(agent, args))
                 .await?;
         }
         (Compatibility::OpenAI, Some(api_base_url)) => {
-            openai::Client::from(api_base_url.as_str())
-                .agent_builder(&args.model)
+            OpenAiClient::from(api_base_url.as_str())
+                .agent_builder()
+                .model(&args.model)
                 .build_and_run(|agent| start_agent(agent, args))
                 .await?;
         }
         (Compatibility::OpenAI, None) => {
-            openai::Client::from(ollama::DEFAULT_API_BASE_URL)
-                .agent_builder(&args.model)
+            OpenAiClient::from(ollama::DEFAULT_API_BASE_URL)
+                .agent_builder()
+                .model(&args.model)
                 .build_and_run(|agent| start_agent(agent, args))
                 .await?;
         }
         (Compatibility::MistralRS, None) => {
             const MISTRALRS_API_BASE_URL: &str = "http://0.0.0.0:1234";
-            openai::Client::from(MISTRALRS_API_BASE_URL)
-                .agent_builder("default")
+            OpenAiClient::from(MISTRALRS_API_BASE_URL)
+                .agent_builder()
+                .model("default")
                 .build_and_run(|agent| start_agent(agent, args))
                 .await?;
         }

@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use crate::{
     agent::AgentBuilder,
     client::{
-        self, ChatMessage,
+        self, ChatMessage, Client,
         ContentEvent::{StartReasoning, StopReasoning},
     },
     providers::openai,
@@ -17,12 +17,12 @@ use crate::{
 pub const DEFAULT_API_BASE_URL: &str = "http://localhost:11434";
 
 #[derive(Debug)]
-pub struct Client {
+pub struct OpenAiClient {
     api_base_url: Url,
     inner: reqwest::Client,
 }
 
-impl client::Client for Client {
+impl Client for OpenAiClient {
     async fn prompt_stream(
         &self,
         payload: client::PromptPayload,
@@ -296,32 +296,32 @@ impl client::Client for Client {
     }
 }
 
-impl From<&str> for Client {
+impl From<&str> for OpenAiClient {
     fn from(api_base_url: &str) -> Self {
-        Client {
+        OpenAiClient {
             api_base_url: Url::from_str(api_base_url).unwrap(),
             inner: reqwest::Client::new(),
         }
     }
 }
 
-impl From<String> for Client {
+impl From<String> for OpenAiClient {
     fn from(api_base_url: String) -> Self {
         Self::from(api_base_url.as_str())
     }
 }
 
-impl Default for Client {
+impl Default for OpenAiClient {
     fn default() -> Self {
-        Client {
+        OpenAiClient {
             api_base_url: Url::from_str(openai::DEFAULT_API_BASE_URL).unwrap(),
             inner: reqwest::Client::new(),
         }
     }
 }
 
-impl Client {
-    pub fn agent_builder(self, model: &str) -> AgentBuilder<openai::Client> {
-        AgentBuilder::from_client(self).model(model)
+impl OpenAiClient {
+    pub fn agent_builder(self) -> AgentBuilder<OpenAiClient> {
+        AgentBuilder::from_client(self)
     }
 }
