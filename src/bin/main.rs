@@ -105,16 +105,16 @@ async fn start_agent<C: client::Client>(agent: Agent<C>, args: Args) -> anyhow::
     if let Some(prompt) = &prompt {
         let mut stream = agent.prompt_stream(prompt).await?;
         while let Some(chunk) = stream.next().await {
-            match &chunk {
+            match &chunk? {
                 client::StreamedReponseContent::ContentEvent(StartReasoning) => {
-                    println!("<reasoning>")
+                    println!("[Thinking...]")
                 }
                 client::StreamedReponseContent::ChunkReasoning { content } => {
                     print!("{}", content);
                     std::io::stdout().flush()?
                 }
                 client::StreamedReponseContent::ContentEvent(StopReasoning) => {
-                    println!("\n</reasoning>")
+                    println!("\n[...Thought complete]")
                 }
                 client::StreamedReponseContent::ChunkText { content } => {
                     print!("{}", content);
@@ -173,21 +173,20 @@ async fn start_agent<C: client::Client>(agent: Agent<C>, args: Args) -> anyhow::
 
                 continue;
             }
-
             let mut stream = agent.chat_stream(&prompt, &mut messages).await?;
             while let Some(chunk) = stream.next().await {
-                match &chunk {
+                match &chunk? {
                     client::StreamedReponseContent::ContentEvent(StartReasoning) => {
-                        println!("<reasoning>");
+                        println!("[Thinking...]");
                     }
                     client::StreamedReponseContent::ChunkMessageReasoning { content, .. } => {
-                        print!("{}", &content);
+                        print!("{}", content);
                     }
                     client::StreamedReponseContent::ContentEvent(StopReasoning) => {
-                        println!("\n</reasoning>");
+                        println!("\n[...Thought complete]");
                     }
                     client::StreamedReponseContent::ChunkMessageText { content, .. } => {
-                        print!("{}", &content);
+                        print!("{}", content);
                     }
                     _ => continue,
                 };

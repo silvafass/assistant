@@ -1,15 +1,19 @@
 use std::str::FromStr;
 
-use anyhow::{Ok, anyhow};
-use futures::StreamExt;
+use anyhow::anyhow;
+use futures::{
+    StreamExt,
+    stream::{self, BoxStream},
+};
 use reqwest::Url;
 use serde_json::{Value, json};
 
 use crate::{
     agent::AgentBuilder,
     client::{
-        self, ChatMessage, Client,
+        self, ChatMessage, Chunk, Client,
         ContentEvent::{StartReasoning, StopReasoning},
+        StreamedReponseContent,
     },
     providers::openai,
 };
@@ -26,10 +30,8 @@ impl Client for OpenAiClient {
     async fn prompt_stream(
         &self,
         payload: client::PromptPayload,
-    ) -> anyhow::Result<impl futures::prelude::Stream<Item = client::StreamedReponseContent>> {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-
-        let mut response = self
+    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamedReponseContent>>> {
+        let response = self
             .inner
             .post(self.api_base_url.join("/v1/responses")?)
             .json(&json!({
@@ -44,46 +46,52 @@ impl Client for OpenAiClient {
             let error_response: serde_json::Value = response.json().await?;
             Err(anyhow!("API error: {error_response}"))
         } else {
-            tokio::spawn(async move {
-                let mut is_reasoning = false;
-                while let Some(chunk) = response.chunk().await.unwrap() {
-                    const REASONING_SUMMARY_TEXT_EVENT: &[u8; 51] =
-                        b"event: response.reasoning_summary_text.delta\ndata: ";
-                    const OUTPUT_TEXT_EVENT: &[u8; 40] =
-                        b"event: response.output_text.delta\ndata: ";
-
-                    if chunk.starts_with(REASONING_SUMMARY_TEXT_EVENT) {
-                        if !is_reasoning {
-                            is_reasoning = true;
-                            let event =
-                                client::StreamedReponseContent::ContentEvent(StartReasoning);
-                            tx.send(event).unwrap();
-                        }
-                        let chunk = &chunk[REASONING_SUMMARY_TEXT_EVENT.len()..];
-                        let chunk: Value = serde_json::from_slice(chunk).unwrap();
-                        let chunk_content = client::StreamedReponseContent::ChunkReasoning {
-                            content: chunk["delta"].as_str().unwrap().to_string(),
+            let mut is_reasoning = false;
+            let stream = response
+                .bytes_stream()
+                .flat_map(move |chunk_result| match chunk_result {
+                    Ok(chunk_bytes) => {
+                        const REASONING_SUMMARY_TEXT_EVENT: &[u8; 51] =
+                            b"event: response.reasoning_summary_text.delta\ndata: ";
+                        const OUTPUT_TEXT_EVENT: &[u8; 40] =
+                            b"event: response.output_text.delta\ndata: ";
+                        let chunks = if chunk_bytes.starts_with(REASONING_SUMMARY_TEXT_EVENT) {
+                            let chunk_bytes = &chunk_bytes[REASONING_SUMMARY_TEXT_EVENT.len()..];
+                            let chunk: Value = serde_json::from_slice(chunk_bytes).unwrap();
+                            let chunk_content = client::StreamedReponseContent::ChunkReasoning {
+                                content: chunk["delta"].as_str().unwrap().to_string(),
+                            };
+                            if !is_reasoning {
+                                is_reasoning = true;
+                                let event =
+                                    client::StreamedReponseContent::ContentEvent(StartReasoning);
+                                vec![Ok(event), Ok(chunk_content)]
+                            } else {
+                                vec![Ok(chunk_content)]
+                            }
+                        } else if chunk_bytes.starts_with(OUTPUT_TEXT_EVENT) {
+                            let chunk_bytes = &chunk_bytes[OUTPUT_TEXT_EVENT.len()..];
+                            let chunk: Value = serde_json::from_slice(chunk_bytes).unwrap();
+                            let chunk_content = client::StreamedReponseContent::ChunkText {
+                                content: chunk["delta"].as_str().unwrap().to_string(),
+                            };
+                            if is_reasoning {
+                                is_reasoning = false;
+                                let event =
+                                    client::StreamedReponseContent::ContentEvent(StopReasoning);
+                                vec![Ok(event), Ok(chunk_content)]
+                            } else {
+                                vec![Ok(chunk_content)]
+                            }
+                        } else {
+                            vec![Err(anyhow!("Unespected result!"))]
                         };
-                        tx.send(chunk_content).unwrap();
-                    } else if chunk.starts_with(OUTPUT_TEXT_EVENT) {
-                        if is_reasoning {
-                            is_reasoning = false;
-                            let event = client::StreamedReponseContent::ContentEvent(StopReasoning);
-                            tx.send(event).unwrap();
-                        }
-                        let chunk = &chunk[OUTPUT_TEXT_EVENT.len()..];
-                        let chunk: Value = serde_json::from_slice(chunk).unwrap();
-                        let chunk_content = client::StreamedReponseContent::ChunkText {
-                            content: chunk["delta"].as_str().unwrap().to_string(),
-                        };
-                        tx.send(chunk_content).unwrap();
-                    };
-                }
-            });
+                        stream::iter(chunks)
+                    }
+                    Err(_) => stream::iter(vec![Err(anyhow!("Unespected result!"))]),
+                });
 
-            let stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
-
-            Ok(stream)
+            Ok(stream.boxed())
         }
     }
 
@@ -132,13 +140,10 @@ impl Client for OpenAiClient {
     async fn chat_stream(
         &self,
         model: &str,
-        prompt: &str,
-        messages: &mut Vec<client::ChatMessage>,
-    ) -> anyhow::Result<impl futures::prelude::Stream<Item = client::StreamedReponseContent>> {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-
-        let mut inner_messages: Vec<Value> = messages
-            .iter_mut()
+        messages: &[ChatMessage],
+    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamedReponseContent>>> {
+        let inner_messages: Vec<Value> = messages
+            .iter()
             .map(|message| {
                 json!({
                     "role": &message.role,
@@ -147,12 +152,7 @@ impl Client for OpenAiClient {
             })
             .collect();
 
-        inner_messages.push(json!({
-            "role": "user",
-            "content": prompt
-        }));
-
-        let mut response = self
+        let response = self
             .inner
             .post(self.api_base_url.join("/v1/chat/completions")?)
             .json(&json!({
@@ -167,92 +167,106 @@ impl Client for OpenAiClient {
             let error_response: serde_json::Value = response.json().await?;
             Err(anyhow!("API error: {error_response}"))
         } else {
-            tokio::spawn(async move {
-                let mut message_rule: Option<String> = None;
-                let mut message_content = String::new();
-                let mut is_reasoning = false;
-                while let Some(chunk) = response.chunk().await.unwrap() {
-                    let chunk = if &chunk[..] == b"data: [DONE]\n\n" {
-                        continue;
-                    } else if chunk.starts_with(b"data: ") && chunk.ends_with(b"data: [DONE]\n\n") {
-                        &chunk[..chunk.len() - b"data: [DONE]\n\n".len()][b"data: ".len()..]
-                    } else if chunk.starts_with(b"data: ") {
-                        &chunk[b"data: ".len()..]
-                    } else {
-                        continue;
-                    };
+            let mut message_rule: Option<String> = None;
+            let mut message_content = String::new();
+            let mut is_reasoning = false;
 
-                    let chunk: Value = serde_json::from_slice(chunk).unwrap();
-
-                    if let (Some(role), Some(thinking)) = (
-                        chunk["choices"][0]["delta"]["role"].as_str(),
-                        chunk["choices"][0]["delta"]["reasoning"].as_str(),
-                    ) && !thinking.is_empty()
-                    {
-                        if !is_reasoning {
-                            is_reasoning = true;
-                            let event =
-                                client::StreamedReponseContent::ContentEvent(StartReasoning);
-                            tx.send(event).unwrap();
+            let stream = response
+                .bytes_stream()
+                .filter_map(|chunk_result| async move {
+                    match chunk_result {
+                        Ok(chunk_bytes) => {
+                            if &chunk_bytes[..] == b"data: [DONE]\n\n" {
+                                None
+                            } else if chunk_bytes.starts_with(b"data: ")
+                                && chunk_bytes.ends_with(b"data: [DONE]\n\n")
+                            {
+                                let chunk_bytes =
+                                    &chunk_bytes[..chunk_bytes.len() - b"data: [DONE]\n\n".len()];
+                                let chunk_bytes = &chunk_bytes[b"data: ".len()..];
+                                Some(Ok(chunk_bytes.to_owned()))
+                            } else if chunk_bytes.starts_with(b"data: ") {
+                                let chunk_bytes = &chunk_bytes[b"data: ".len()..];
+                                Some(Ok(chunk_bytes.to_owned()))
+                            } else {
+                                None
+                            }
                         }
-                        let chunk = client::StreamedReponseContent::ChunkMessageReasoning {
-                            role: role.to_string(),
-                            content: thinking.to_string(),
-                        };
-
-                        tx.send(chunk).unwrap();
-                    } else if let (Some(role), Some(response)) = (
-                        chunk["choices"][0]["delta"]["role"].as_str(),
-                        chunk["choices"][0]["delta"]["content"].as_str(),
-                    ) && !response.is_empty()
-                    {
-                        if is_reasoning {
-                            is_reasoning = false;
-                            let event = client::StreamedReponseContent::ContentEvent(StopReasoning);
-                            tx.send(event).unwrap();
-                        }
-                        if message_rule.is_none() {
-                            message_rule = Some(role.to_string());
-                        }
-                        message_content.push_str(response);
-
-                        let chunk = client::StreamedReponseContent::ChunkMessageText {
-                            role: role.to_string(),
-                            content: response.to_string(),
-                        };
-                        tx.send(chunk).unwrap();
-                    };
-                }
-
-                let message_text = client::StreamedReponseContent::MessageText {
-                    role: message_rule.unwrap(),
-                    content: message_content,
-                };
-                tx.send(message_text).unwrap();
-            });
-
-            let stream =
-                tokio_stream::wrappers::UnboundedReceiverStream::new(rx).inspect(|message| {
-                    if let client::StreamedReponseContent::MessageText { role, content } = message {
-                        messages.push(ChatMessage {
-                            role: role.clone(),
-                            content: content.clone(),
-                        });
+                        Err(_) => Some(Err(anyhow!("Unespected result!"))),
                     }
+                })
+                .map(|chunk_result| match chunk_result {
+                    Ok(chunk_bytes) => Chunk::Some(Ok(chunk_bytes.to_owned().into())),
+                    Err(error) => Chunk::Some(Err(error)),
+                })
+                .chain(stream::once(async { Chunk::None }))
+                .flat_map(move |chunk_result| match chunk_result {
+                    Chunk::Some(Ok(chunk_bytes)) => {
+                        let chunk: Value = serde_json::from_slice(&chunk_bytes).unwrap();
+
+                        let chunks = if let (Some(role), Some(thinking)) = (
+                            chunk["choices"][0]["delta"]["role"].as_str(),
+                            chunk["choices"][0]["delta"]["reasoning"].as_str(),
+                        ) && !thinking.is_empty()
+                        {
+                            let chunk_content =
+                                client::StreamedReponseContent::ChunkMessageReasoning {
+                                    role: role.to_string(),
+                                    content: thinking.to_string(),
+                                };
+                            if !is_reasoning {
+                                is_reasoning = true;
+                                let event =
+                                    client::StreamedReponseContent::ContentEvent(StartReasoning);
+                                vec![Ok(event), Ok(chunk_content)]
+                            } else {
+                                vec![Ok(chunk_content)]
+                            }
+                        } else if let (Some(role), Some(response)) = (
+                            chunk["choices"][0]["delta"]["role"].as_str(),
+                            chunk["choices"][0]["delta"]["content"].as_str(),
+                        ) && !response.is_empty()
+                        {
+                            if message_rule.is_none() {
+                                message_rule = Some(role.to_string());
+                            }
+                            message_content.push_str(response);
+
+                            let chunk_content = client::StreamedReponseContent::ChunkMessageText {
+                                role: role.to_string(),
+                                content: response.to_string(),
+                            };
+                            if is_reasoning {
+                                is_reasoning = false;
+                                let event =
+                                    client::StreamedReponseContent::ContentEvent(StopReasoning);
+                                vec![Ok(event), Ok(chunk_content)]
+                            } else {
+                                vec![Ok(chunk_content)]
+                            }
+                        } else {
+                            vec![Err(anyhow!("Unespected result!"))]
+                        };
+                        stream::iter(chunks)
+                    }
+                    Chunk::Some(Err(_)) => stream::iter(vec![Err(anyhow!("Unespected result!"))]),
+                    Chunk::None => stream::iter(vec![Ok(StreamedReponseContent::MessageText {
+                        role: message_rule.clone().unwrap(),
+                        content: message_content.clone(),
+                    })]),
                 });
 
-            Ok(stream)
+            Ok(stream.boxed())
         }
     }
 
     async fn chat(
         &self,
         model: &str,
-        prompt: &str,
-        messages: &mut Vec<ChatMessage>,
+        messages: &[ChatMessage],
     ) -> anyhow::Result<client::ResponseContent> {
-        let mut inner_messages: Vec<Value> = messages
-            .iter_mut()
+        let inner_messages: Vec<Value> = messages
+            .iter()
             .map(|message| {
                 json!({
                     "role": &message.role,
@@ -260,11 +274,6 @@ impl Client for OpenAiClient {
                 })
             })
             .collect();
-
-        inner_messages.push(json!({
-            "role": "user",
-            "content": prompt
-        }));
 
         let response = self
             .inner

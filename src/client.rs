@@ -1,4 +1,5 @@
-use futures::Stream;
+use bytes::Bytes;
+use futures::stream::BoxStream;
 
 pub enum ContentEvent {
     StartReasoning,
@@ -15,6 +16,11 @@ pub enum StreamedReponseContent {
     MessageText { role: String, content: String },
     ContentEvent(ContentEvent),
     Content { reasoning: String, text: String },
+}
+
+pub enum Chunk {
+    Some(Result<Bytes, anyhow::Error>),
+    None,
 }
 
 pub struct ResponseContent {
@@ -42,22 +48,20 @@ pub trait Client {
         &self,
         payload: PromptPayload,
     ) -> impl std::future::Future<
-        Output = anyhow::Result<impl Stream<Item = StreamedReponseContent> + Unpin>,
+        Output = anyhow::Result<BoxStream<'static, anyhow::Result<StreamedReponseContent>>>,
     > + Send;
 
     fn chat(
         &self,
         model: &str,
-        prompt: &str,
-        messages: &mut Vec<ChatMessage>,
+        messages: &[ChatMessage],
     ) -> impl std::future::Future<Output = anyhow::Result<ResponseContent>> + Send;
 
     fn chat_stream(
         &self,
         model: &str,
-        prompt: &str,
-        messages: &mut Vec<ChatMessage>,
+        messages: &[ChatMessage],
     ) -> impl std::future::Future<
-        Output = anyhow::Result<impl Stream<Item = StreamedReponseContent> + Unpin>,
+        Output = anyhow::Result<BoxStream<'static, anyhow::Result<StreamedReponseContent>>>,
     > + Send;
 }

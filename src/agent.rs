@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use anyhow::Ok;
-use futures::Stream;
+use futures::{Stream, TryStreamExt, stream::BoxStream};
 
 use crate::client::{ChatMessage, Client, PromptPayload, ResponseContent, StreamedReponseContent};
 
@@ -18,7 +18,7 @@ impl<C: Client> Agent<C> {
     pub async fn prompt_stream(
         &self,
         input: &str,
-    ) -> anyhow::Result<impl Stream<Item = StreamedReponseContent>> {
+    ) -> anyhow::Result<BoxStream<'static, anyhow::Result<StreamedReponseContent>>> {
         let payload = PromptPayload {
             model: self.model.to_string(),
             prompt: input.to_string(),
@@ -38,8 +38,25 @@ impl<C: Client> Agent<C> {
         &self,
         input: &str,
         messages: &mut Vec<ChatMessage>,
-    ) -> anyhow::Result<impl Stream<Item = StreamedReponseContent>> {
-        self.client.chat_stream(&self.model, input, messages).await
+    ) -> anyhow::Result<impl Stream<Item = anyhow::Result<StreamedReponseContent>>> {
+        messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: input.to_string(),
+        });
+
+        self.client
+            .chat_stream(&self.model, messages)
+            .await
+            .map(|stream| {
+                stream.inspect_ok(|chunk| {
+                    if let StreamedReponseContent::MessageText { role, content } = chunk {
+                        messages.push(ChatMessage {
+                            role: role.clone(),
+                            content: content.clone(),
+                        });
+                    };
+                })
+            })
     }
 
     pub async fn chat(
@@ -47,7 +64,20 @@ impl<C: Client> Agent<C> {
         input: &str,
         messages: &mut Vec<ChatMessage>,
     ) -> anyhow::Result<ResponseContent> {
-        self.client.chat(&self.model, input, messages).await
+        messages.push(ChatMessage {
+            role: "user".to_string(),
+            content: input.to_string(),
+        });
+
+        self.client
+            .chat(&self.model, messages)
+            .await
+            .inspect(|chunk| {
+                messages.push(ChatMessage {
+                    role: "assistant".to_string(),
+                    content: chunk.text.clone(),
+                });
+            })
     }
 }
 
