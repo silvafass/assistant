@@ -37,6 +37,9 @@ impl Client for OllamaClient {
                 "model": &payload.model,
                 "prompt": &payload.prompt,
                 "stream": true,
+                "options": {
+                    "num_ctx": 32_000
+                },
             }))
             .send()
             .await?;
@@ -100,6 +103,9 @@ impl Client for OllamaClient {
                 "model": &payload.model,
                 "prompt": &payload.prompt,
                 "stream": false,
+                "options": {
+                    "num_ctx": 32_000
+                },
             }))
             .send()
             .await?;
@@ -141,6 +147,9 @@ impl Client for OllamaClient {
                 "model": model,
                 "messages": inner_messages,
                 "stream": true,
+                "options": {
+                    "num_ctx": 32_000
+                },
             }))
             .send()
             .await?;
@@ -240,6 +249,9 @@ impl Client for OllamaClient {
                 "model": model,
                 "messages": inner_messages,
                 "stream": false,
+                "options": {
+                    "num_ctx": 32_000
+                },
             }))
             .send()
             .await?;
