@@ -1,191 +1,114 @@
-use std::io::Write;
-use std::io::{IsTerminal, Read};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use anyhow::{Result, bail};
-use assistant::agent::AgentBuilder;
-use assistant::client::ContentEvent::{StartReasoning, StopReasoning};
-use assistant::providers::ClientBuilder;
-use assistant::{client, providers};
-use clap::{Parser, ValueEnum};
-use rustyline::{DefaultEditor, error::ReadlineError};
-use tokio_stream::StreamExt;
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None, args_conflicts_with_subcommands = true)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-enum Compatibility {
-    Ollama,
-    OpenAI,
-    MistralRS,
+    #[command(flatten)]
+    general_args: GeneralArgs,
 }
 
-/// Simple assistant program
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Args {
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Run in general-purpose mode [Default mode]
+    General(GeneralArgs),
+    /// Run in coding-purpose mode
+    Coding(CodingArgs),
+    /// Run in integration-purpose mode via Agent Client Protocal server (Code editor integrations)
+    Acp,
+}
+
+#[derive(Args, Debug)]
+pub struct GeneralArgs {
+    #[command(flatten)]
+    shared: GlobalOpts,
+}
+
+#[derive(Args, Debug)]
+pub struct CodingArgs {
+    #[command(flatten)]
+    shared: GlobalOpts,
+}
+
+#[derive(Args, Debug)]
+struct GlobalOpts {
     /// Model name
     #[arg(short, long, default_value_t = String::from("gemma4"))]
     model: String,
 
-    /// Input
+    /// To receive the prompt
     #[arg(short, long)]
     input: Option<String>,
 
-    /// API compatibility
+    /// The API compatibility to use
     #[arg(short, long, value_enum, default_value_t = Compatibility::Ollama)]
     compatibility: Compatibility,
 
-    /// API base URL
+    /// Provider API base URL
     #[arg(short, long)]
     api_base_url: Option<String>,
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
+enum Compatibility {
+    /// Ollama API compatibility
+    Ollama,
+    /// OpenAI API compatibility (useful for integrate with OpenAI API-compatible providers)
+    OpenAI,
+    /// Mistral-rs integration compatibility (conveniently runs as an OpenAI API-compatible provider)
+    MistralRS,
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
-    let args = Args::parse();
+async fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
 
-    let agent = match (&args.compatibility, &args.api_base_url) {
-        (Compatibility::Ollama, Some(api_base_url)) => {
-            let client = ClientBuilder::new(providers::Compatibility::Ollama)
-                .api_base_url(api_base_url)
-                .build()?;
-            AgentBuilder::from_client(client)
-                .model(&args.model)
-                .build()?
-        }
-        (Compatibility::Ollama, None) => {
-            let client = ClientBuilder::new(providers::Compatibility::Ollama).build()?;
-            AgentBuilder::from_client(client)
-                .model(&args.model)
-                .build()?
-        }
-        (Compatibility::OpenAI, Some(api_base_url)) => {
-            let client = ClientBuilder::new(providers::Compatibility::OpenAI)
-                .api_base_url(api_base_url)
-                .build()?;
-            AgentBuilder::from_client(client)
-                .model(&args.model)
-                .build()?
-        }
-        (Compatibility::OpenAI, None) => {
-            let client = ClientBuilder::new(providers::Compatibility::OpenAI).build()?;
-            AgentBuilder::from_client(client)
-                .model(&args.model)
-                .build()?
-        }
-        (Compatibility::MistralRS, None) => {
-            let client = ClientBuilder::new(providers::Compatibility::MistralRS).build()?;
-            AgentBuilder::from_client(client).model("default").build()?
-        }
-        (compatibility, api_base_url) => bail!(
-            "Unsupported args values: compatibility: {:?}, api_base_url: {:?} ",
-            compatibility,
-            api_base_url
-        ),
+    let get_args = |args: GlobalOpts| {
+        let compatibility = match args.compatibility {
+            Compatibility::Ollama => assistant::providers::Compatibility::Ollama,
+            Compatibility::OpenAI => assistant::providers::Compatibility::OpenAI,
+            Compatibility::MistralRS => assistant::providers::Compatibility::MistralRS,
+        };
+        (args.model, args.input, compatibility, args.api_base_url)
     };
 
-    let prompt = if let Some(input) = args.input {
-        Some(input)
-    } else if !std::io::stdin().is_terminal() {
-        let mut buffer = String::new();
-        std::io::stdin().read_to_string(&mut buffer)?;
-        Some(buffer)
-    } else {
-        None
+    match cli.command {
+        Some(Commands::General(general_args)) => {
+            let (model, input, compatibility, api_base_url) = get_args(general_args.shared);
+            assistant::mode::general(
+                &model,
+                input.as_deref(),
+                compatibility,
+                api_base_url.as_deref(),
+            )
+            .await?;
+        }
+        Some(Commands::Coding(coding_args)) => {
+            let (model, input, compatibility, api_base_url) = get_args(coding_args.shared);
+            assistant::mode::coding(
+                &model,
+                input.as_deref(),
+                compatibility,
+                api_base_url.as_deref(),
+            )
+            .await?;
+        }
+        Some(Commands::Acp) => {
+            assistant::mode::acp().await?;
+        }
+        None => {
+            let (model, input, compatibility, api_base_url) = get_args(cli.general_args.shared);
+            assistant::mode::general(
+                &model,
+                input.as_deref(),
+                compatibility,
+                api_base_url.as_deref(),
+            )
+            .await?;
+        }
     };
-
-    if let Some(prompt) = &prompt {
-        let mut stream = agent.prompt_stream(prompt).await?;
-        while let Some(chunk) = stream.next().await {
-            match &chunk? {
-                client::StreamedReponseContent::ContentEvent(StartReasoning) => {
-                    println!("[Thinking...]")
-                }
-                client::StreamedReponseContent::ChunkReasoning { content } => {
-                    print!("{}", content);
-                    std::io::stdout().flush()?
-                }
-                client::StreamedReponseContent::ContentEvent(StopReasoning) => {
-                    println!("\n[...Thought complete]")
-                }
-                client::StreamedReponseContent::ChunkText { content } => {
-                    print!("{}", content);
-                    std::io::stdout().flush()?
-                }
-                _ => continue,
-            }
-        }
-    } else {
-        let mut command = clap::Command::default()
-            .disable_help_subcommand(true)
-            .help_template("Commands:\n{subcommands}")
-            .subcommand(clap::Command::new("/help").alias("/?").about("Print help"))
-            .subcommand(clap::Command::new("/quit").alias("/q").about("Exit"));
-
-        let mut messages: Vec<client::ChatMessage> = vec![];
-
-        let mut rl = DefaultEditor::new()?;
-        loop {
-            let readline = rl.readline("❯ ");
-            let prompt = match readline {
-                Ok(line) => {
-                    rl.add_history_entry(line.as_str())?;
-                    line
-                }
-                Err(ReadlineError::Interrupted) => break,
-                Err(ReadlineError::Eof) => break,
-                Err(err) => {
-                    eprintln!("Error: {:?}", err);
-                    break;
-                }
-            };
-
-            if prompt.starts_with("/") {
-                let matches = command.clone().try_get_matches_from(
-                    format!(". {prompt}")
-                        .split_whitespace()
-                        .collect::<Vec<&str>>(),
-                );
-                match matches {
-                    Ok(matches) => match matches.subcommand() {
-                        Some(("/quit", ..)) => {
-                            break;
-                        }
-                        Some(("/help", ..)) => {
-                            command.print_long_help()?;
-                        }
-                        _ => {
-                            println!("Not yet implemented!");
-                        }
-                    },
-                    Err(err) => {
-                        println!("{err}");
-                    }
-                }
-
-                continue;
-            }
-            let mut stream = agent.chat_stream(&prompt, &mut messages).await?;
-            while let Some(chunk) = stream.next().await {
-                match &chunk? {
-                    client::StreamedReponseContent::ContentEvent(StartReasoning) => {
-                        println!("[Thinking...]");
-                    }
-                    client::StreamedReponseContent::ChunkMessageReasoning { content, .. } => {
-                        print!("{}", content);
-                    }
-                    client::StreamedReponseContent::ContentEvent(StopReasoning) => {
-                        println!("\n[...Thought complete]");
-                    }
-                    client::StreamedReponseContent::ChunkMessageText { content, .. } => {
-                        print!("{}", content);
-                    }
-                    _ => continue,
-                };
-                std::io::stdout().flush()?;
-            }
-
-            println!();
-        }
-    }
 
     Ok(())
 }

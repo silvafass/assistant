@@ -8,10 +8,6 @@ default-run = "assist"
 name = "assist"
 path = "src/bin/main.rs"
 
-[[bin]]
-name = "assist-draft"
-path = "src/bin/draft.rs"
-
 [dependencies]
 anyhow = "1.0.102"
 bytes = "1.12.0"
