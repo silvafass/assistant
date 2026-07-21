@@ -44,30 +44,19 @@ fn get_agent(
     compatibility: Compatibility,
     api_base_url: Option<&str>,
 ) -> anyhow::Result<Agent> {
-    let agent = match (&compatibility, api_base_url) {
-        (Compatibility::Ollama, Some(api_base_url)) => {
-            let client = ClientBuilder::new(compatibility)
-                .api_base_url(api_base_url)
-                .build()?;
-            AgentBuilder::from_client(client).model(model).build()?
-        }
-        (Compatibility::Ollama, None) => {
-            let client = ClientBuilder::new(compatibility).build()?;
-            AgentBuilder::from_client(client).model(model).build()?
-        }
-        (Compatibility::OpenAI, Some(api_base_url)) => {
-            let client = ClientBuilder::new(Compatibility::OpenAI)
-                .api_base_url(api_base_url)
-                .build()?;
-            AgentBuilder::from_client(client).model(model).build()?
-        }
-        (Compatibility::OpenAI, None) => {
-            let client = ClientBuilder::new(Compatibility::OpenAI).build()?;
-            AgentBuilder::from_client(client).model(model).build()?
-        }
+    let mut model = model;
+    let client = match (&compatibility, api_base_url) {
+        (Compatibility::Ollama, Some(api_base_url)) => ClientBuilder::new(compatibility)
+            .api_base_url(api_base_url)
+            .build()?,
+        (Compatibility::Ollama, None) => ClientBuilder::new(compatibility).build()?,
+        (Compatibility::OpenAI, Some(api_base_url)) => ClientBuilder::new(Compatibility::OpenAI)
+            .api_base_url(api_base_url)
+            .build()?,
+        (Compatibility::OpenAI, None) => ClientBuilder::new(Compatibility::OpenAI).build()?,
         (Compatibility::MistralRS, None) => {
-            let client = ClientBuilder::new(Compatibility::MistralRS).build()?;
-            AgentBuilder::from_client(client).model("default").build()?
+            model = "default";
+            ClientBuilder::new(Compatibility::MistralRS).build()?
         }
         (compatibility, api_base_url) => bail!(
             "Unsupported args values: compatibility: {:?}, api_base_url: {:?} ",
@@ -76,6 +65,7 @@ fn get_agent(
         ),
     };
 
+    let agent = AgentBuilder::from_client(client).model(model).build()?;
     Ok(agent)
 }
 
