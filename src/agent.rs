@@ -1,20 +1,17 @@
-use std::fmt::Debug;
-
 use anyhow::Ok;
 use futures::{Stream, TryStreamExt, stream::BoxStream};
 
-use crate::client::{ChatMessage, Client, PromptPayload, ResponseContent, StreamedReponseContent};
+use crate::{
+    client::{ChatMessage, Client, PromptPayload, ResponseContent, StreamedReponseContent},
+    providers::ClientProvider,
+};
 
-#[derive(Debug, Default)]
-pub struct Agent<C>
-where
-    C: Client,
-{
-    client: C,
+pub struct Agent {
+    client: ClientProvider,
     model: String,
 }
 
-impl<C: Client> Agent<C> {
+impl Agent {
     pub async fn prompt_stream(
         &self,
         input: &str,
@@ -81,17 +78,13 @@ impl<C: Client> Agent<C> {
     }
 }
 
-#[derive(Default)]
-pub struct AgentBuilder<C>
-where
-    C: Client,
-{
-    client: C,
+pub struct AgentBuilder {
+    client: ClientProvider,
     model: Option<String>,
 }
 
-impl<C: Client> AgentBuilder<C> {
-    pub fn from_client(client: C) -> Self {
+impl AgentBuilder {
+    pub fn from_client(client: ClientProvider) -> Self {
         AgentBuilder {
             client,
             model: None,
@@ -103,7 +96,7 @@ impl<C: Client> AgentBuilder<C> {
         self
     }
 
-    pub fn build(self) -> anyhow::Result<Agent<C>> {
+    pub fn build(self) -> anyhow::Result<Agent> {
         let agent = Agent {
             client: self.client,
             model: self.model.unwrap(),
@@ -114,7 +107,7 @@ impl<C: Client> AgentBuilder<C> {
 
     pub fn build_and_run<F, Fut>(self, handler: F) -> Fut
     where
-        F: FnOnce(Agent<C>) -> Fut,
+        F: FnOnce(Agent) -> Fut,
         Fut: Future<Output = anyhow::Result<()>>,
     {
         let agent = self.build().unwrap();

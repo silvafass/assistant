@@ -2,12 +2,10 @@ use std::io::Write;
 use std::io::{IsTerminal, Read};
 
 use anyhow::{Result, bail};
-use assistant::agent::Agent;
-use assistant::client;
+use assistant::agent::AgentBuilder;
 use assistant::client::ContentEvent::{StartReasoning, StopReasoning};
-use assistant::providers::ollama;
-use assistant::providers::ollama::OllamaClient;
-use assistant::providers::openai::OpenAiClient;
+use assistant::providers::ClientBuilder;
+use assistant::{client, providers};
 use clap::{Parser, ValueEnum};
 use rustyline::{DefaultEditor, error::ReadlineError};
 use tokio_stream::StreamExt;
@@ -44,42 +42,38 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    match (&args.compatibility, &args.api_base_url) {
+    let agent = match (&args.compatibility, &args.api_base_url) {
         (Compatibility::Ollama, Some(api_base_url)) => {
-            OllamaClient::from(api_base_url.as_str())
-                .agent_builder()
+            let client = ClientBuilder::new(providers::Compatibility::Ollama)
+                .api_base_url(api_base_url)
+                .build()?;
+            AgentBuilder::from_client(client)
                 .model(&args.model)
-                .build_and_run(|agent| start_agent(agent, args))
-                .await?;
+                .build()?
         }
         (Compatibility::Ollama, None) => {
-            OllamaClient::default()
-                .agent_builder()
+            let client = ClientBuilder::new(providers::Compatibility::Ollama).build()?;
+            AgentBuilder::from_client(client)
                 .model(&args.model)
-                .build_and_run(|agent| start_agent(agent, args))
-                .await?;
+                .build()?
         }
         (Compatibility::OpenAI, Some(api_base_url)) => {
-            OpenAiClient::from(api_base_url.as_str())
-                .agent_builder()
+            let client = ClientBuilder::new(providers::Compatibility::OpenAI)
+                .api_base_url(api_base_url)
+                .build()?;
+            AgentBuilder::from_client(client)
                 .model(&args.model)
-                .build_and_run(|agent| start_agent(agent, args))
-                .await?;
+                .build()?
         }
         (Compatibility::OpenAI, None) => {
-            OpenAiClient::from(ollama::DEFAULT_API_BASE_URL)
-                .agent_builder()
+            let client = ClientBuilder::new(providers::Compatibility::OpenAI).build()?;
+            AgentBuilder::from_client(client)
                 .model(&args.model)
-                .build_and_run(|agent| start_agent(agent, args))
-                .await?;
+                .build()?
         }
         (Compatibility::MistralRS, None) => {
-            const MISTRALRS_API_BASE_URL: &str = "http://0.0.0.0:1234";
-            OpenAiClient::from(MISTRALRS_API_BASE_URL)
-                .agent_builder()
-                .model("default")
-                .build_and_run(|agent| start_agent(agent, args))
-                .await?;
+            let client = ClientBuilder::new(providers::Compatibility::MistralRS).build()?;
+            AgentBuilder::from_client(client).model("default").build()?
         }
         (compatibility, api_base_url) => bail!(
             "Unsupported args values: compatibility: {:?}, api_base_url: {:?} ",
@@ -88,10 +82,6 @@ async fn main() -> Result<()> {
         ),
     };
 
-    Ok(())
-}
-
-async fn start_agent<C: client::Client>(agent: Agent<C>, args: Args) -> anyhow::Result<()> {
     let prompt = if let Some(input) = args.input {
         Some(input)
     } else if !std::io::stdin().is_terminal() {

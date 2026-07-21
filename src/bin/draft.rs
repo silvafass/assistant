@@ -67,9 +67,9 @@ async fn main() -> anyhow::Result<()> {
 
     let get_args = |args: GlobalOpts| {
         let compatibility = match args.compatibility {
-            Compatibility::Ollama => assistant::mode::Compatibility::Ollama,
-            Compatibility::OpenAI => assistant::mode::Compatibility::OpenAI,
-            Compatibility::MistralRS => assistant::mode::Compatibility::MistralRS,
+            Compatibility::Ollama => assistant::providers::Compatibility::Ollama,
+            Compatibility::OpenAI => assistant::providers::Compatibility::OpenAI,
+            Compatibility::MistralRS => assistant::providers::Compatibility::MistralRS,
         };
         (args.model, args.input, compatibility, args.api_base_url)
     };

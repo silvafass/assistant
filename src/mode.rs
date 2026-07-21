@@ -1,12 +1,4 @@
-#[derive(Debug)]
-pub enum Compatibility {
-    /// Ollama API compatibility
-    Ollama,
-    /// OpenAI API compatibility (useful for integrate with OpenAI API-compatible providers)
-    OpenAI,
-    /// Mistral-rs integration compatibility (conveniently runs as an OpenAI API-compatible provider)
-    MistralRS,
-}
+use crate::providers::Compatibility;
 
 pub async fn general(
     model: &str,

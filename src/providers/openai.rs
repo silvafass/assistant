@@ -9,7 +9,6 @@ use reqwest::Url;
 use serde_json::{Value, json};
 
 use crate::{
-    agent::AgentBuilder,
     client::{
         self, ChatMessage, Chunk, Client,
         ContentEvent::{StartReasoning, StopReasoning},
@@ -326,11 +325,5 @@ impl Default for OpenAiClient {
             api_base_url: Url::from_str(openai::DEFAULT_API_BASE_URL).unwrap(),
             inner: reqwest::Client::new(),
         }
-    }
-}
-
-impl OpenAiClient {
-    pub fn agent_builder(self) -> AgentBuilder<OpenAiClient> {
-        AgentBuilder::from_client(self)
     }
 }
