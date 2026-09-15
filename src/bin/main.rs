@@ -34,8 +34,14 @@ pub struct CodingArgs {
 
 #[derive(Args, Debug)]
 struct GlobalOpts {
+    #[cfg(target_arch = "x86_64")]
     /// Model name
     #[arg(short, long, default_value_t = String::from("gemma4"))]
+    model: String,
+
+    #[cfg(target_arch = "aarch64")]
+    /// Model name
+    #[arg(short, long, default_value_t = String::from("smollm2:135m"))]
     model: String,
 
     /// To receive the prompt
