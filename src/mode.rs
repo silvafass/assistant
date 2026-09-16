@@ -12,34 +12,12 @@ use crate::{
     providers::{ClientBuilder, Compatibility},
 };
 
-pub async fn general(
-    model: &str,
-    input: Option<&str>,
-    compatibility: Compatibility,
-    api_base_url: Option<&str>,
-) -> anyhow::Result<()> {
-    let agent = get_agent(model, compatibility, api_base_url)?;
+pub mod acp;
+pub mod coding;
+pub mod general;
+pub mod voice;
 
-    run_agent(agent, input).await
-}
-
-pub async fn coding(
-    model: &str,
-    input: Option<&str>,
-    compatibility: Compatibility,
-    api_base_url: Option<&str>,
-) -> anyhow::Result<()> {
-    let agent = get_agent(model, compatibility, api_base_url)?;
-
-    run_agent(agent, input).await
-}
-
-pub async fn acp() -> anyhow::Result<()> {
-    dbg!("acp");
-    Ok(())
-}
-
-fn get_agent(
+pub fn get_agent(
     model: &str,
     compatibility: Compatibility,
     api_base_url: Option<&str>,
@@ -69,7 +47,7 @@ fn get_agent(
     Ok(agent)
 }
 
-async fn run_agent(agent: Agent, input: Option<&str>) -> anyhow::Result<()> {
+pub async fn run_agent(agent: Agent, input: Option<&str>) -> anyhow::Result<()> {
     let prompt = if let Some(input) = input {
         Some(input.to_string())
     } else if !std::io::stdin().is_terminal() {

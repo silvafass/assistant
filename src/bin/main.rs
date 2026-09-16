@@ -14,6 +14,8 @@ struct Cli {
 enum Commands {
     /// Run in general-purpose mode [Default mode]
     General(GeneralArgs),
+    /// Run in voice mode
+    Voice(VoiceArgs),
     /// Run in coding-purpose mode
     Coding(CodingArgs),
     /// Run in integration-purpose mode via Agent Client Protocal server (Code editor integrations)
@@ -22,6 +24,12 @@ enum Commands {
 
 #[derive(Args, Debug)]
 pub struct GeneralArgs {
+    #[command(flatten)]
+    shared: GlobalOpts,
+}
+
+#[derive(Args, Debug)]
+pub struct VoiceArgs {
     #[command(flatten)]
     shared: GlobalOpts,
 }
@@ -83,7 +91,17 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Commands::General(general_args)) => {
             let (model, input, compatibility, api_base_url) = get_args(general_args.shared);
-            assistant::mode::general(
+            assistant::mode::general::run(
+                &model,
+                input.as_deref(),
+                compatibility,
+                api_base_url.as_deref(),
+            )
+            .await?;
+        }
+        Some(Commands::Voice(voice_args)) => {
+            let (model, input, compatibility, api_base_url) = get_args(voice_args.shared);
+            assistant::mode::voice::run(
                 &model,
                 input.as_deref(),
                 compatibility,
@@ -93,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Coding(coding_args)) => {
             let (model, input, compatibility, api_base_url) = get_args(coding_args.shared);
-            assistant::mode::coding(
+            assistant::mode::coding::run(
                 &model,
                 input.as_deref(),
                 compatibility,
@@ -102,11 +120,11 @@ async fn main() -> anyhow::Result<()> {
             .await?;
         }
         Some(Commands::Acp) => {
-            assistant::mode::acp().await?;
+            assistant::mode::acp::run().await?;
         }
         None => {
             let (model, input, compatibility, api_base_url) = get_args(cli.general_args.shared);
-            assistant::mode::general(
+            assistant::mode::general::run(
                 &model,
                 input.as_deref(),
                 compatibility,
