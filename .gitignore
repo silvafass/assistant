@@ -1,1 +1,10 @@
 /target
+
+# python things
+.venv
+
+# The wake word model training things
+resources/wakeword-model-training
+
+# hugginface things
+hf.token
