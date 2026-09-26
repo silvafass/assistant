@@ -1,5 +1,5 @@
-use std::collections::VecDeque;
 use std::sync::mpsc;
+use std::{collections::VecDeque, time::Instant};
 
 use anyhow::Context;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -85,7 +85,10 @@ pub async fn run(
 
             let window: Vec<i16> = wakeword_audio_ring_buffer.iter().copied().collect();
 
-            wekeword_model.predict(&window)?
+            let start = Instant::now();
+            let predictions = wekeword_model.predict(&window)?;
+            dbg!(start.elapsed());
+            predictions
         } else {
             continue;
         };
@@ -106,7 +109,7 @@ pub async fn run(
             while let Ok(chunk_command) = receiver.recv() {
                 command_audio.extend_from_slice(&chunk_command);
 
-                const COMMAND_AUDIO_CHUNK_SIZE: usize = 16_000 * 5;
+                const COMMAND_AUDIO_CHUNK_SIZE: usize = 16_000 * 3;
                 let max_amplitude = command_audio
                     .last_chunk::<COMMAND_AUDIO_CHUNK_SIZE>()
                     .unwrap_or(&[MINIMAL_WINDOW_AMPLITUDE; COMMAND_AUDIO_CHUNK_SIZE])
