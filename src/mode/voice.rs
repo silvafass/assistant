@@ -24,11 +24,11 @@ pub async fn run(
     let repo = client.model("silvafass", "wakeword-assistant");
     let wekeword_models_paths = [
         repo.download_file()
-            .filename("wakeword-assistant_pt-br.onnx")
+            .filename("livekit-wakeword_assistant_pt-br.onnx")
             .send()
             .await?,
         repo.download_file()
-            .filename("wakeword-assistant_en-us.onnx")
+            .filename("livekit-wakeword_assistant_en-us.onnx")
             .send()
             .await?,
     ];
