@@ -28,6 +28,7 @@ impl LivekitWakeWordModel {
         embedding_model_path: P,
         classifier_models_paths: &[P],
     ) -> anyhow::Result<Self> {
+        let env = ort::init().build()?;
         let mut classifier_sessions = HashMap::new();
         for classifier_model_path in classifier_models_paths {
             classifier_sessions.insert(
@@ -37,14 +38,14 @@ impl LivekitWakeWordModel {
                     .and_then(|name| name.to_str())
                     .unwrap_or("unknown")
                     .to_string(),
-                ort::session::Session::builder()?.commit_from_file(classifier_model_path)?,
+                ort::session::Session::builder(&env)?.commit_from_file(classifier_model_path)?,
             );
         }
 
         Ok(Self {
-            melspectrogram_session: ort::session::Session::builder()?
+            melspectrogram_session: ort::session::Session::builder(&env)?
                 .commit_from_file(melspectrogram_model_path)?,
-            embedding_session: ort::session::Session::builder()?
+            embedding_session: ort::session::Session::builder(&env)?
                 .commit_from_file(embedding_model_path)?,
             classifier_sessions,
         })
