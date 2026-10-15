@@ -1,10 +1,10 @@
 use crate::audio_input::AUDIO_RATE;
 use rodio::{ChannelCount, SampleRate};
 
+use crate::Downloader;
 use crate::audio_input::AudioInputStreamBuilder;
 use crate::model_engines::WithRingBuffer;
 use crate::model_engines::livekit_wakeword::LivekitWakeWordModel;
-
 use crate::providers::Compatibility;
 use crate::voice_agent::VoiceAgent;
 
@@ -16,11 +16,25 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     println!("Running in voice mode...");
 
-    let mut wakeword_engine = LivekitWakeWordModel::from_huggingface_paths(&[
-        "silvafass/wakeword-assistant/livekit-wakeword_assistant_pt-br.onnx",
-        "silvafass/wakeword-assistant/livekit-wakeword_assistant_en-us.onnx",
-    ])
-    .await?
+    let download = Downloader::new(".cache");
+    let melspectrogram_model_path = download
+        .from_github_path("livekit/rust-sdks/livekit-wakeword/onnx/melspectrogram.onnx")
+        .await?;
+    let embedding_model_path = download
+        .from_github_path("livekit/rust-sdks/livekit-wakeword/onnx/embedding_model.onnx")
+        .await?;
+    let inference_models_paths = download
+        .from_huggingface_paths(&[
+            "silvafass/wakeword-assistant/livekit-wakeword_assistant_pt-br.onnx",
+            "silvafass/wakeword-assistant/livekit-wakeword_assistant_en-us.onnx",
+        ])
+        .await?;
+
+    let mut wakeword_engine = LivekitWakeWordModel::new(
+        melspectrogram_model_path,
+        embedding_model_path,
+        &inference_models_paths,
+    )?
     .into_ring_buffer();
 
     let voice_agent = VoiceAgent {};

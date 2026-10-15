@@ -3,8 +3,8 @@
 # python things
 .venv
 
-# The wake word model training things
-resources/wakeword-model-training
+# cache
+.cache
 
 # hugginface things
 hf.token
