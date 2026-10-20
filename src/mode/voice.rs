@@ -1,5 +1,6 @@
-use crate::audio_input::AUDIO_RATE;
 use rodio::{ChannelCount, SampleRate};
+
+use crate::audio_input::AUDIO_RATE;
 
 use crate::Downloader;
 use crate::audio_input::AudioInputStreamBuilder;

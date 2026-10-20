@@ -70,6 +70,13 @@ impl AudioInputStreamBuilder {
         let input_device = host
             .default_input_device()
             .context("No input device available")?;
+
+        println!(
+            "Using input device: \"{}\", \"{}\"",
+            input_device.id()?,
+            input_device.description()?
+        );
+
         let input_config = cpal::StreamConfig {
             channels: 1,
             sample_rate: AUDIO_RATE,
